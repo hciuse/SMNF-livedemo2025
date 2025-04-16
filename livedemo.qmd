@@ -1,0 +1,369 @@
+---
+title: "Live Demo R Datenanalyse"
+author: "André Calero Valdez"
+format: 
+  revealjs:
+    theme: ["theme/q-theme.scss"]
+    code-copy: true
+    center-title-slide: false
+    code-link: true
+    code-overflow: wrap
+    highlight-style: a11y
+    height: 1080
+    width: 1920
+    slide-number: c/t
+
+---
+
+## Quarto
+
+- Ermöglicht es statistische Analysen automatisch auszuführen und in eine Präsentation oder Dokument zu integrieren.
+- Daten werden automatisch heruntergeladen und ausgewertet.
+
+```{r setup}
+#| echo=FALSE
+library(limer)
+library(tidyverse)
+library(kableExtra)
+library(cowplot)
+
+source("rs.R")
+options(digits = 3)
+
+line_to_execute <- 1
+
+knitr::opts_chunk$set(
+  cache = FALSE,
+  fig.align = "center",
+  dev = "png",
+  fig.retina = 2,
+  message = FALSE,
+  comment = NA
+)
+```
+
+# Daten vorbereiten
+
+
+```{r}
+#| eval: false
+#| include: false
+
+
+## Daten per API einlesen
+
+# Setup API details
+options(lime_api = 'https://limesurvey.imis.uni-luebeck.de/index.php/admin/remotecontrol')
+options(lime_username = 'username')
+options(lime_password = 'XXXX')
+
+# Log in
+get_session_key()  # Log in
+
+# RPC Call to get the data
+raw_data <- call_limer(method = "export_responses",
+                       params = list(iSurveyID = 0,
+                                     sDocumentType = "csv",
+                                     sLanguageCode = "de",
+                                     sCompletionStatus = "complete",
+                                     sHeadingType = "code",
+                                     sResponseType = "code"))
+
+data <- base64_to_df(raw_data)
+line_to_execute <- 2
+release_session_key()
+```
+
+## Daten konvertieren
+
+```{r}
+#| echo=TRUE
+
+# the script file for correcting the data after downloads
+# our survey tool creates this for us
+read_script_filename <- "survey_597113_R_syntax_file.R"
+
+# execute the script (except first line)
+con <- file(read_script_filename)
+slength <- length(readLines(con))
+
+# generates a data variable
+rs(read_script_filename, from = line_to_execute, to = slength)
+
+nrow(data)
+```
+
+Wir haben `r nrow(data)` Datensätze.
+
+## Daten anschauen
+```{r}
+#| echo=TRUE
+data %>%
+  head() %>%
+  kable("html") %>%
+  kable_styling("striped", full_width = F, font_size = 15)
+```
+
+
+## Daten filtern
+```{r}
+#| echo=TRUE
+responses <- data %>%
+  # convert age to numeric
+  mutate(age = as.numeric(age)) %>%
+  # pick only responses with age < 100
+  dplyr::filter(age < 99) %>%
+  noop()
+names(responses)
+```
+
+## Daten bereinigen - ATI Berechnung
+```{r}
+#| echo=TRUE
+
+keys.list <- list(ATI = c("ATI_1", "ATI_2", "-ATI_3",
+                          "ATI_4", "ATI_5", "-ATI_6",
+                          "ATI_7", "-ATI_8", "ATI_9"))
+
+ati <- responses %>% dplyr::select(starts_with("ATI")) %>%
+  mutate(across(everything(), ~ as.numeric(.x))) %>%
+  psych::scoreItems(keys.list, ., min = 1, max = 6)
+
+ati$alpha
+```
+
+Der Alpha-Wert sagt etwas über die "innere" Qualität der Skala aus. Ein Wert von 0.7 oder höher ist gut.
+
+## Daten bereinigen - BFI10 Berechnung
+```{r}
+#| echo=TRUE
+
+keys.list <- list(bfi_o = c("-BFI10_SQ005", "BFI10_SQ010"),
+                  bfi_c = c("-BFI10_SQ003", "BFI10_SQ008"),
+                  bfi_e = c("-BFI10_SQ001", "BFI10_SQ006"),
+                  bfi_a = c("BFI10_SQ002", "-BFI10_SQ007", "BFI10_SQ011"),
+                  bfi_n = c("-BFI10_SQ004", "BFI10_SQ009"))
+bfi10 <- responses %>% select(starts_with("BFI10")) %>%
+  mutate(across(everything(), ~ as.numeric(.x))) %>%
+  psych::scoreItems(keys.list, ., min = 1, max = 5)
+
+bfi10$alpha
+```
+
+
+## Skalen anhängen 
+Zusätzlich unbenötige Items "wegwerfen". 
+```{r}
+#| echo=TRUE
+clean_data <- responses %>%
+  bind_cols(ati$scores) %>%
+  bind_cols(bfi10$scores) %>%
+  select(-starts_with("BFI10_")) %>%
+  select(-starts_with("ATI_"))
+ncol(responses)
+ncol(clean_data)
+```
+
+# Deskriptive Statistik 
+
+## Deskriptive Statistik in Zahlen
+Für jede Variable können wir unterschiedliche Metriken generieren.
+```{r}
+#| echo=TRUE
+clean_data %>%
+  select(age, gender, ATI, bfi_o, bfi_c, bfi_e, bfi_a, bfi_n) |> 
+  psych::describe() |> 
+  kbl() |> 
+  kable_classic(full_width = F, html_font = "Helvetica", font_size = 26)
+```
+
+
+## Deskriptive Statistik in Grafiken
+Wie ist das Geschlecht verteilt?
+```{r}
+clean_data %>% ggplot() +
+  aes(x = gender) +
+  geom_bar() +
+  labs(x = "Geschlecht", y = "Anzahl") +
+  cowplot::theme_cowplot()
+```
+
+## Deskriptive Statistik in Grafiken
+Wie ist das Alter verteilt?
+
+```{r}
+clean_data %>% ggplot() +
+  aes(x = age) +
+  geom_histogram() +
+  labs(x = "Alter", y = "Anzahl") +
+  cowplot::theme_cowplot()
+```
+
+# Inferenz Statistik
+
+## Zusammenhangshypothesen
+Gibt es einen Zusammenhang zwischen BFI_N und ATI?
+
+```{r}
+#| echo=TRUE
+
+clean_data |> ggplot() +
+  aes(x = bfi_n, y = ATI) +
+  geom_point() + geom_smooth(method = "lm") +
+  cowplot::theme_cowplot()
+```
+
+## Als Inferenztest
+Korrelation zwischen BFI_N und ATI
+
+
+```{r}
+#| echo=TRUE
+res <- cor.test(clean_data$bfi_n, clean_data$ATI, method = "pearson")
+res 
+
+```
+
+```{r}
+if(res$p.value < 0.05){
+  txt <- "einen"
+} else {
+  txt <- "keinen"
+}
+```
+
+
+Es gibt `r txt` signifikanten Zusammenhang zwische BFI_N und ATI (`r apastats::describe.r(res)`).
+
+## Unterschiedshypothesen
+Gibt es einen Unterschied zwischen den Geschlechtern in der ATI?
+
+```{r}
+#| echo=TRUE
+# t-test allows only two groups
+t_data <- clean_data |> 
+  filter(gender != "divers") |> 
+  mutate(gender = fct_drop(gender))
+
+res <- t.test(ATI ~ gender, data = t_data) 
+res
+```
+
+
+```{r}
+txt <- if(res$p.value < 0.05){
+  "einen"
+} else {
+  "keinen"
+}
+
+```
+
+Es gibt `r txt` signifikanten Unterschied zwischen den Geschlechtern in der ATI (`r apastats::describe.ttest(res)`).
+
+
+# Semantisches Differenzial
+
+## Semantisches Differenzial vorbereiten
+```{r}
+#| echo=TRUE
+
+# generate a codebook for the semantic differential items
+codebook <- tibble(name = names(data), label = attributes(data)$variable.labels)
+
+# all variables that start with this string will be visualized
+variable_prefix <- "semantic"
+# The range of the semantic differential (e.g., 2 for -2:2)
+# incoming values are 1:5, so we need to subtract 3
+differential_range = 2
+```
+
+
+```{r}
+codebook %>%  
+  kbl() %>%
+  kable_classic(full_width = F, html_font = "Helvetica") %>%
+  kable_styling(bootstrap_options = 
+                  c("striped", "hover", "condensed"), font_size = 22)
+```
+
+## Labels erzeugen
+
+```{r}
+#| echo=TRUE
+
+# generate the labels for left and right
+semantic_labels <- codebook %>%
+  filter(str_starts(name, variable_prefix)) %>%
+  mutate(label = str_extract(label, "\\[(.*)\\]")) %>%
+  mutate(label = str_sub(label, start = 2, end = -2)) %>%
+  separate(label, into = c("left", "right"), sep = "\\|", remove = FALSE)
+```
+
+
+```{r}
+semantic_labels |>  kbl() %>%
+  kable_classic(full_width = F, html_font = "Helvetica") %>%
+  kable_styling(bootstrap_options = 
+                  c("striped", "hover", "condensed"), font_size = 22 )
+```
+
+## Labels anhängen
+
+```{r}
+#| echo=TRUE
+
+# generate a data frame with the semantic variables
+# and the mean value for each category
+semantic_variables <- responses %>%
+  select(id, starts_with(variable_prefix)) %>%
+  setNames(c("id", semantic_labels$left)) %>%
+  pivot_longer(cols = -id) %>%
+  mutate(value = as.numeric(as.character(value))) %>%
+  group_by(name) %>%
+  mutate(mean_value = mean(value, na.rm = TRUE)) %>%
+  ungroup()
+
+# join in mean value to semantic label for ordering
+semantic_labels_ordered <- semantic_labels %>%
+  left_join(
+    # get mean value for each variable
+    semantic_variables %>%
+      select(name, mean_value) %>%
+      unique(),
+    by = c("left" = "name")) %>%
+  arrange(desc(mean_value))
+```
+
+## Semantisches Differenzial plotten
+```{r}
+
+semantic_variables %>%
+  mutate(name = as.numeric(factor(name, levels = semantic_labels_ordered$left, ordered = TRUE))) %>%
+  ggplot() +
+  aes(x = name, y = value) +
+  stat_summary(fun.data = "mean_cl_boot", geom = "errorbar", width = 0.3) +
+  stat_summary(fun.data = "mean_cl_boot", geom = "point") +
+  stat_summary(fun.data = "mean_cl_boot", geom = "line", group = "1") +
+  scale_y_continuous(limits = c(-2,2)) +
+  scale_x_continuous(NULL,
+    limits = c(0.5, length(semantic_labels_ordered$left) +0.5),
+    expand = c(0, 0),
+    breaks = 1:length(semantic_labels_ordered$left),
+    minor_breaks = NULL,
+    labels = semantic_labels_ordered$left,
+    sec.axis = dup_axis(
+      labels = semantic_labels_ordered$right,
+      name = NULL
+    )
+  ) +
+  coord_flip() +
+    labs(title = "Semantisches Differenzial nach Kategorie",
+         y = "Tendenz",
+         caption = "Mittelwert und 95% Konfidenzintervall (bootstrapped)") 
+```
+
+
+
+
+
